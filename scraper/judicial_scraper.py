@@ -15,11 +15,11 @@ from pathlib import Path
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-from scraper.utils import load_progress, make_session, polite_sleep, safe_get, save_progress
+from scraper.utils import load_progress, make_session, polite_sleep, safe_get, safe_post, save_progress
 
 BASE_URL = "https://judgment.judicial.gov.tw/FJUD"
-SEARCH_URL = f"{BASE_URL}/default.aspx"
-QUERY_URL = f"{BASE_URL}/FJUDQRY02M_1.aspx"
+SEARCH_URL = f"{BASE_URL}/Default_AD.aspx"     # advanced search form
+RESULTS_URL = f"{BASE_URL}/qryresultlst.aspx"  # iframe results list
 
 # ROC year = CE year - 1911
 ROC_OFFSET = 1911
@@ -57,66 +57,51 @@ def _extract_viewstate(html: str) -> dict:
 
 
 def _parse_result_list(html: str) -> list[dict]:
-    """Parse the search results page and extract judgment metadata."""
+    """Parse qryresultlst.aspx and return judgment metadata list."""
     soup = BeautifulSoup(html, "lxml")
     results = []
 
-    # Results table rows contain judgment links
-    for row in soup.select("table.table tbody tr"):
-        cells = row.find_all("td")
-        if len(cells) < 4:
+    for a in soup.select("a.hlTitle_scroll[href*='data.aspx']"):
+        href = a["href"]
+        id_match = re.search(r"[?&]id=([^&]+)", href)
+        if not id_match:
             continue
-
-        link_tag = row.find("a", href=True)
-        if not link_tag:
-            continue
-
-        href = link_tag["href"]
-        # Extract JID from URL query string
-        jid_match = re.search(r"[?&]jid=([^&]+)", href)
-        if not jid_match:
-            # Try alternate URL format
-            jid_match = re.search(r"FJUDQRY02_1\.aspx\?(.+)", href)
-
-        title = link_tag.get_text(strip=True)
-        court_text = cells[1].get_text(strip=True) if len(cells) > 1 else ""
-        date_text = cells[2].get_text(strip=True) if len(cells) > 2 else ""
-        case_no = cells[3].get_text(strip=True) if len(cells) > 3 else ""
-
-        jid = jid_match.group(1) if jid_match else ""
+        jid = id_match.group(1)
         full_url = f"{BASE_URL}/{href}" if not href.startswith("http") else href
+
+        row = a.find_parent("tr")
+        cells = row.find_all("td") if row else []
+        date_text = cells[2].get_text(strip=True) if len(cells) > 2 else ""
+        cause_text = cells[3].get_text(strip=True) if len(cells) > 3 else ""
 
         results.append({
             "jid": jid,
             "url": full_url,
-            "title": title,
-            "court": court_text,
+            "title": a.get_text(strip=True),
+            "court": "",        # extracted by parser from full text
             "date_raw": date_text,
-            "case_no": case_no,
+            "case_no": cause_text,
         })
 
     return results
 
 
 def _count_pages(html: str) -> int:
-    """Determine total number of result pages."""
+    """Return total pages from qryresultlst.aspx pagination."""
     soup = BeautifulSoup(html, "lxml")
-    # Look for pagination info like "第1/50頁" or "共 1000 筆"
-    pager = soup.find(string=re.compile(r"共\s*\d+\s*筆|第\s*\d+\s*/\s*\d+\s*頁"))
-    if pager:
-        total_match = re.search(r"共\s*(\d+)\s*筆", str(pager))
-        if total_match:
-            total = int(total_match.group(1))
-            return (total + 19) // 20  # 20 results per page
-
-    # Count page links directly
-    page_links = soup.select("ul.pagination li a[href]")
-    page_nums = []
-    for a in page_links:
-        num_match = re.search(r"\d+", a.get_text())
-        if num_match:
-            page_nums.append(int(num_match.group()))
-    return max(page_nums) if page_nums else 1
+    # "最末頁" link contains the last page number
+    last_link = soup.find("a", string=re.compile(r"最末頁"))
+    if last_link and last_link.get("href"):
+        m = re.search(r"page=(\d+)", last_link["href"])
+        if m:
+            return int(m.group(1))
+    # Fallback: total count ÷ 20
+    count_div = soup.find(id="result-count")
+    if count_div:
+        m = re.search(r"(\d+)", count_div.get_text())
+        if m:
+            return (int(m.group(1)) + 19) // 20
+    return 1
 
 
 def fetch_judgment_text(session, url: str, jid: str) -> dict | None:
@@ -150,49 +135,54 @@ def fetch_judgment_text(session, url: str, jid: str) -> dict | None:
 
 
 def search_year(session, keyword: str, year_ce: int, roc_start: str, roc_end: str) -> list[dict]:
-    """Search for judgments matching keyword in a given year, returns metadata list."""
+    """Search for judgments matching keyword in a given year, returns metadata list.
+
+    Flow:
+      1. POST Default_AD.aspx → get QID
+      2. GET qryresultlst.aspx?q=<QID>&page=N for each page
+    """
     results = []
     try:
-        # Load search page to get ASP.NET form state
+        # roc_start / roc_end are like "1130101" → split into y/m/d
+        roc_y_start, roc_m_start, roc_d_start = roc_start[:3], roc_start[3:5].lstrip("0") or "1", roc_start[5:].lstrip("0") or "1"
+        roc_y_end, roc_m_end, roc_d_end = roc_end[:3], roc_end[3:5].lstrip("0") or "12", roc_end[5:].lstrip("0") or "31"
+
         resp = safe_get(session, SEARCH_URL)
         vs_fields = _extract_viewstate(resp.text)
         polite_sleep()
 
-        # POST search form
         form_data = {
             **vs_fields,
             "__EVENTTARGET": "",
             "__EVENTARGUMENT": "",
-            "jud_kw": keyword,
-            "jud_type": "M",          # 刑事
             "jud_court": "",
-            "jud_sdate": roc_start,
-            "jud_edate": roc_end,
-            "jud_sys": "0",
-            "ctl00$ContentPlaceHolder1$btnQry": "查詢",
+            "jud_sys": "M",
+            "jud_kw": keyword,
+            "dy1": roc_y_start, "dm1": roc_m_start, "dd1": roc_d_start,
+            "dy2": roc_y_end,   "dm2": roc_m_end,   "dd2": roc_d_end,
+            "judtype": "JUDBOOK",
+            "whosub": "0",
+            "ctl00$cp_content$btnQry": "送出查詢",
         }
         resp = safe_post(session, SEARCH_URL, data=form_data)
         polite_sleep()
 
-        first_page_results = _parse_result_list(resp.text)
-        results.extend(first_page_results)
+        qid_tag = BeautifulSoup(resp.text, "lxml").find("input", id="hidQID")
+        if not qid_tag or not qid_tag.get("value"):
+            print(f"  [WARN] 搜尋 {year_ce}/{keyword!r} 未取得 QID", file=sys.stderr)
+            return results
+        qid = qid_tag["value"]
 
-        total_pages = _count_pages(resp.text)
-        if total_pages > 1:
-            vs_fields = _extract_viewstate(resp.text)
+        # Fetch first results page
+        r = safe_get(session, f"{RESULTS_URL}?ty=JUDBOOK&q={qid}")
+        polite_sleep()
+        results.extend(_parse_result_list(r.text))
 
-        for page in range(2, min(total_pages + 1, 51)):  # cap at 50 pages (~1000) per keyword/year
+        total_pages = _count_pages(r.text)
+        for page in range(2, min(total_pages + 1, 51)):  # cap 50 pages (~1000) per keyword/year
             polite_sleep(2.0, 4.0)
-            page_data = {
-                **vs_fields,
-                "__EVENTTARGET": "ctl00$ContentPlaceHolder1$gridView",
-                "__EVENTARGUMENT": f"Page${page}",
-                "jud_kw": keyword,
-            }
-            resp = safe_post(session, SEARCH_URL, data=page_data)
-            vs_fields = _extract_viewstate(resp.text)
-            page_results = _parse_result_list(resp.text)
-            results.extend(page_results)
+            r = safe_get(session, f"{RESULTS_URL}?q={qid}&sort=DS&page={page}")
+            results.extend(_parse_result_list(r.text))
 
     except Exception as e:
         print(f"  [ERROR] search_year failed: {e}", file=sys.stderr)
