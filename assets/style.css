@@ -1,0 +1,35 @@
+body {
+    font-family: 'Noto Sans TC', 'Microsoft JhengHei', sans-serif;
+    background-color: #F5F5F5;
+}
+
+.nav-tabs .nav-link {
+    font-size: 0.95rem;
+    font-weight: 500;
+}
+
+.card {
+    border-radius: 8px;
+}
+
+.dash-table-container {
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+/* Scrollable data table */
+.dash-spreadsheet-container .dash-spreadsheet-inner table {
+    font-size: 13px;
+}
+
+/* KPI cards */
+.card-title {
+    font-size: 1.8rem;
+    font-weight: 700;
+}
+
+/* Alert banner */
+.alert {
+    border-radius: 8px;
+    border-left: 4px solid #17a2b8;
+}

@@ -1,0 +1,14 @@
+requests>=2.31.0
+beautifulsoup4>=4.12.2
+lxml>=4.9.3
+tenacity>=8.2.3
+tqdm>=4.66.0
+pandas>=2.1.0
+numpy>=1.25.0
+scipy>=1.11.0
+statsmodels>=0.14.0
+dash>=2.14.0
+dash-bootstrap-components>=1.5.0
+plotly>=5.17.0
+click>=8.1.0
+python-dotenv>=1.0.0
