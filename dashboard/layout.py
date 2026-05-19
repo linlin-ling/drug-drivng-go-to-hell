@@ -33,6 +33,7 @@ TABS = dbc.Tabs(
         dbc.Tab(label="📈 年份趨勢", tab_id="trends"),
         dbc.Tab(label="🔍 個案查詢", tab_id="case-explorer"),
         dbc.Tab(label="🔬 影響因素", tab_id="factors"),
+        dbc.Tab(label="⚖️ 審級分析", tab_id="appeal-chain"),
     ],
     className="mt-3 mb-0",
 )

@@ -4,7 +4,7 @@ from dash import Input, Output, State, callback
 from dash.exceptions import PreventUpdate
 
 from dashboard.components import (
-    overview, court_map, judge_view, trends, case_explorer, factors
+    overview, court_map, judge_view, trends, case_explorer, factors, appeal_chain
 )
 
 
@@ -30,6 +30,8 @@ def register_callbacks(app, df: pd.DataFrame) -> None:
             return case_explorer.layout(df)
         if active_tab == "factors":
             return factors.layout(df)
+        if active_tab == "appeal-chain":
+            return appeal_chain.layout(df)
         return "請選擇頁籤"
 
     # ── Judge page: violin updates when court changes ─────────────────────────
