@@ -18,11 +18,36 @@ SECTION_SIG = re.compile(r"中\s*華\s*民\s*國")
 # ── Metadata patterns ─────────────────────────────────────────────────────────
 
 COURT_RE = re.compile(
-    r"(臺灣[^\s法]{1,6}地方(?:法院|檢察署)|[^\s]{2,6}高等法院|最高法院|[^\s]{2,5}地方法院)"
+    r"(臺灣高等法院(?:(?:臺中|臺南|高雄|花蓮)分院)?"
+    r"|最高法院"
+    r"|臺灣[^\s,，、。（(法]{1,5}地方法院)"
 )
 CASE_NO_RE = re.compile(r"(?:民國\s*)?(\d{2,3})\s*年度\s*([^\s第號]{1,8})\s*字第\s*(\d+)\s*號")
 DATE_ROC_RE = re.compile(r"中\s*華\s*民\s*國\s*(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日")
 JUDGE_RE = re.compile(r"(?:審判長\s*)?法\s*官\s*([一-鿿]{2,4})")
+
+# ── Appeal / cross-instance patterns ──────────────────────────────────────────
+
+# Extract original case reference in appeal judgments: "不服XX法院 YYY年度ZZZ字第NNN號"
+ORIGINAL_CASE_RE = re.compile(
+    r"不服(臺灣[^\s,，、。（(]{2,12}(?:地方|高等)法院|最高法院)[^,，\n]{0,30}?"
+    r"(\d{2,3})年度([^\s第號,，]{1,10})字第(\d+)號"
+)
+
+# Appeal outcome patterns (search 主文)
+APPEAL_UPHELD_RE = re.compile(r"上訴駁回|駁回上訴")
+APPEAL_OVERTURN_RE = re.compile(r"撤銷原判決[^。\n]{0,30}有期徒刑|撤銷.*?改判")
+APPEAL_REMAND_RE = re.compile(r"撤銷.*?發回[更原]?審|發回更審")
+
+# When appeal is upheld, original sentence is mentioned in reasoning
+# Match: "判處被告有期徒刑X月", "量處有期徒刑X月", "處有期徒刑X月"
+REASONING_SENTENCE_RE = re.compile(
+    r"(?:判處被告|量處|諭知|處)\s*有期徒刑(?:(\d+)年)?(?:(\d+)月)?"
+)
+
+# Appealed by
+DEFENDANT_APPEAL_RE = re.compile(r"上訴人\s*即\s*被告|被告[^\n]{0,5}提起上訴")
+PROSECUTOR_APPEAL_RE = re.compile(r"上訴人\s*即\s*檢察官|檢察官[^\n]{0,10}(?:提起)?上訴")
 
 
 # ── Sentencing patterns ───────────────────────────────────────────────────────
@@ -144,6 +169,14 @@ def parse_judgment(raw: dict) -> dict:
         "caused_injury": False,
         "caused_serious_injury": False,
         "guilty_plea": False,
+        # Cross-instance / appeal
+        "court_level": None,
+        "case_instance": None,
+        "case_type_word": None,
+        "original_court_ref": None,
+        "original_case_no_ref": None,
+        "appeal_outcome": None,
+        "appealed_by": None,
         # Quality
         "parse_warnings": [],
     }
@@ -158,12 +191,33 @@ def parse_judgment(raw: dict) -> dict:
     if court_m:
         result["court"] = court_m.group(1)
 
+    # Court level and case instance
+    court_val = result["court"] or ""
+    if "地方法院" in court_val:
+        result["court_level"] = 1
+        result["case_instance"] = "一審"
+    elif "高等法院" in court_val:
+        result["court_level"] = 2
+        result["case_instance"] = "二審"
+    elif "最高法院" in court_val:
+        result["court_level"] = 3
+        result["case_instance"] = "三審"
+
     case_m = CASE_NO_RE.search(text)
     if case_m:
         roc_year, word, no = case_m.groups()
         result["case_no"] = f"{roc_year}年{word}字第{no}號"
+        result["case_type_word"] = word
         if year_ce is None:
             result["year_ce"] = _roc_to_ce(int(roc_year))
+
+    # Original case reference (for appeal judgments)
+    orig_m = ORIGINAL_CASE_RE.search(text)
+    if orig_m:
+        result["original_court_ref"] = orig_m.group(1)
+        result["original_case_no_ref"] = (
+            f"{orig_m.group(2)}年{orig_m.group(3)}字第{orig_m.group(4)}號"
+        )
 
     date_m = DATE_ROC_RE.findall(text)
     if date_m:
@@ -185,11 +239,35 @@ def parse_judgment(raw: dict) -> dict:
     if not main_text:
         main_text = text[:2000]  # fallback: first 2000 chars
 
+    # ── Extract 理由 (reasoning) section ─────────────────────────────────────
+
+    reason_text = _extract_section(text, SECTION_REASON, SECTION_SIG)
+
     # ── Acquittal check ───────────────────────────────────────────────────────
 
     if ACQUIT_RE.search(main_text):
         result["acquitted"] = True
         # Some acquittals still have partial sentences for other charges; continue
+
+    # ── Appeal outcome (search 主文) ──────────────────────────────────────────
+
+    if APPEAL_REMAND_RE.search(main_text):
+        result["appeal_outcome"] = "撤銷發回"
+    elif APPEAL_OVERTURN_RE.search(main_text):
+        result["appeal_outcome"] = "撤銷改判"
+    elif APPEAL_UPHELD_RE.search(main_text):
+        result["appeal_outcome"] = "上訴駁回"
+
+    # ── Appealed by ───────────────────────────────────────────────────────────
+
+    def_appeal = bool(DEFENDANT_APPEAL_RE.search(text))
+    pros_appeal = bool(PROSECUTOR_APPEAL_RE.search(text))
+    if def_appeal and pros_appeal:
+        result["appealed_by"] = "雙方"
+    elif def_appeal:
+        result["appealed_by"] = "被告"
+    elif pros_appeal:
+        result["appealed_by"] = "檢察官"
 
     # ── Prison term ───────────────────────────────────────────────────────────
 
@@ -208,6 +286,15 @@ def parse_judgment(raw: dict) -> dict:
             terms.append(int(m.group(1)))
         if terms:
             result["prison_months"] = max(terms)
+
+    # Fix: when appeal is upheld, original sentence is in the reasoning section
+    if result["prison_months"] is None and result["appeal_outcome"] == "上訴駁回":
+        search_text = reason_text if reason_text else text
+        for m in REASONING_SENTENCE_RE.finditer(search_text):
+            months = _to_months(m.group(1), m.group(2))
+            if months and months > 0:
+                result["prison_months"] = months
+                break
 
     # Detention (拘役) — mutually exclusive with prison
     det_m = DETENTION_RE.search(main_text)

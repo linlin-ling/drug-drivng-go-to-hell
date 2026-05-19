@@ -95,12 +95,23 @@ def load_and_clean(json_path: str | Path = PROCESSED_JSON) -> pd.DataFrame:
 
     df["severity"] = df.apply(severity, axis=1)
 
+    # ── Court level and instance (from parser fields) ─────────────────────────
+    for col in ["court_level", "case_instance", "case_type_word",
+                "original_court_ref", "original_case_no_ref",
+                "appeal_outcome", "appealed_by"]:
+        if col not in df.columns:
+            df[col] = None
+
     # ── Filter: keep only cases with valid sentencing info ────────────────────
     valid_mask = (
         df["effective_months"].notna() | df["acquitted"]
     ) & df["year"].between(2016, 2026)
 
     df_clean = df[valid_mask].copy()
+
+    # ── Build appeal chains ───────────────────────────────────────────────────
+    from analysis.case_linker import build_appeal_chains
+    df_clean = build_appeal_chains(df_clean)
 
     return df_clean
 
@@ -120,6 +131,12 @@ def load_csv(path: str | Path = PROCESSED_CSV) -> pd.DataFrame:
         for col in ["drug_class", "year", "month"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
+        # Keep these as strings (not forced numeric)
+        for col in ["chain_id", "case_instance", "case_type_word",
+                    "original_court_ref", "original_case_no_ref",
+                    "appeal_outcome", "appealed_by", "lower_jid", "higher_jid"]:
+            if col in df.columns:
+                df[col] = df[col].where(df[col].notna(), None)
         bool_cols = [
             "sentence_suspended", "acquitted", "is_repeat_offender",
             "caused_accident", "caused_death", "caused_injury",
