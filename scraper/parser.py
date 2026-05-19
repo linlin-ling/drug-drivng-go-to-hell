@@ -15,6 +15,38 @@ SECTION_REASON = re.compile(r"理\s*由")
 SECTION_SIG = re.compile(r"中\s*華\s*民\s*國")
 
 
+# ── Number helpers (Arabic and Chinese formal/informal numerals) ──────────────
+
+_NP = r"(?:\d+|[壹貳參肆伍陸柒捌玖拾百千]+|[一二三四五六七八九十百千]+)"
+
+_DIGIT_MAP = {
+    "零": 0, "〇": 0,
+    "一": 1, "壹": 1, "二": 2, "貳": 2, "三": 3, "參": 3,
+    "四": 4, "肆": 4, "五": 5, "伍": 5, "六": 6, "陸": 6,
+    "七": 7, "柒": 7, "八": 8, "捌": 8, "九": 9, "玖": 9,
+}
+_UNIT_MAP = {"十": 10, "拾": 10, "百": 100, "千": 1000, "仟": 1000}
+
+
+def _parse_num(s: str | None) -> int | None:
+    """Convert Arabic or Chinese numeral string to int. Returns None on failure."""
+    if not s:
+        return None
+    s = s.strip()
+    if s.isdigit():
+        return int(s)
+    result, current = 0, 0
+    for ch in s:
+        if ch in _UNIT_MAP:
+            result += (current if current else 1) * _UNIT_MAP[ch]
+            current = 0
+        elif ch in _DIGIT_MAP:
+            current = _DIGIT_MAP[ch]
+        else:
+            return None
+    return result + current or None
+
+
 # ── Metadata patterns ─────────────────────────────────────────────────────────
 
 COURT_RE = re.compile(
@@ -40,9 +72,10 @@ APPEAL_OVERTURN_RE = re.compile(r"撤銷原判決[^。\n]{0,30}有期徒刑|撤�
 APPEAL_REMAND_RE = re.compile(r"撤銷.*?發回[更原]?審|發回更審")
 
 # When appeal is upheld, original sentence is mentioned in reasoning
-# Match: "判處被告有期徒刑X月", "量處有期徒刑X月", "處有期徒刑X月"
 REASONING_SENTENCE_RE = re.compile(
-    r"(?:判處被告|量處|諭知|處)\s*有期徒刑(?:(\d+)年)?(?:(\d+)月)?"
+    r"(?:判處被告|量處|諭知|處)\s*有期徒刑\s*"
+    r"(?:(" + _NP + r")\s*年(?:\s*(" + _NP + r")\s*月)?|(" + _NP + r")\s*月)",
+    re.DOTALL,
 )
 
 # Appealed by
@@ -52,24 +85,36 @@ PROSECUTOR_APPEAL_RE = re.compile(r"上訴人\s*即\s*檢察官|檢察官[^\n]{0
 
 # ── Sentencing patterns ───────────────────────────────────────────────────────
 
-# 有期徒刑 X 年 X 月 (prison term)
-PRISON_YEAR_MONTH_RE = re.compile(r"有期徒刑(?:(\d+)年)?(?:(\d+)月)?")
+# 有期徒刑 N年M月 / N年 / M月  (captures year group and optional month group,
+# or just a month group — two alternatives so both are non-optional)
+PRISON_YEAR_MONTH_RE = re.compile(
+    r"有期徒刑\s*(" + _NP + r")\s*年(?:\s*(" + _NP + r")\s*月)?"
+    r"|有期徒刑\s*(" + _NP + r")\s*月",
+    re.DOTALL,
+)
 # 有期徒刑X個月 (alternative phrasing)
-PRISON_MONTHS_ALT_RE = re.compile(r"有期徒刑(\d+)個月")
+PRISON_MONTHS_ALT_RE = re.compile(r"有期徒刑\s*(" + _NP + r")\s*個月")
 # 應執行有期徒刑 (concurrent/merged sentence, take this if present)
-MERGED_SENTENCE_RE = re.compile(r"應執行有期徒刑(?:(\d+)年)?(?:(\d+)月)?")
+MERGED_SENTENCE_RE = re.compile(
+    r"應執行有期徒刑\s*(" + _NP + r")\s*年(?:\s*(" + _NP + r")\s*月)?"
+    r"|應執行有期徒刑\s*(" + _NP + r")\s*月",
+    re.DOTALL,
+)
 # 拘役 (detention, < 60 days)
-DETENTION_RE = re.compile(r"拘役\s*(\d+)\s*日")
+DETENTION_RE = re.compile(r"拘役\s*(" + _NP + r")\s*日")
 # 緩刑 (suspended)
-SUSPENDED_RE = re.compile(r"緩刑\s*(\d+)\s*(年|月)")
-# 罰金 (fine)
-FINE_RE = re.compile(r"罰金新臺幣\s*([\d,]+)\s*元|罰金新臺幣\s*(\d+)\s*萬(?:\s*(\d+)\s*千)?元")
-# 易科罰金 (convertible)
-CONVERTIBLE_RE = re.compile(r"以新臺幣\s*(\d+)\s*元折算壹日")
+SUSPENDED_RE = re.compile(r"緩刑\s*(" + _NP + r")\s*(年|月)")
+# 罰金 (fine) — amounts typically in Arabic but support Chinese too
+FINE_RE = re.compile(
+    r"罰金新臺幣\s*([\d,]+)\s*元"
+    r"|罰金新臺幣\s*(" + _NP + r")\s*萬(?:\s*(" + _NP + r")\s*千)?元"
+)
+# 易科罰金 (convertible) — 壹仟/一千/1000 are all common
+CONVERTIBLE_RE = re.compile(r"以新臺幣\s*(" + _NP + r")\s*元折算壹日")
 # 無罪 / acquittal
 ACQUIT_RE = re.compile(r"無罪|公訴不受理|免訴|不受理|不另為無罪之諭知")
 # 駕照吊扣/吊銷
-LICENSE_SUSPEND_RE = re.compile(r"吊扣駕駛執照\s*(\d+)\s*(年|月)")
+LICENSE_SUSPEND_RE = re.compile(r"吊扣駕駛執照\s*(" + _NP + r")\s*(年|月)")
 LICENSE_REVOKE_RE = re.compile(r"吊銷駕駛執照")
 
 
@@ -117,8 +162,8 @@ def _roc_to_ce(roc_year: int) -> int:
 
 
 def _to_months(years: str | None, months: str | None) -> int | None:
-    y = int(years) if years else 0
-    m = int(months) if months else 0
+    y = _parse_num(years) or 0
+    m = _parse_num(months) or 0
     total = y * 12 + m
     return total if total > 0 else None
 
@@ -271,42 +316,55 @@ def parse_judgment(raw: dict) -> dict:
 
     # ── Prison term ───────────────────────────────────────────────────────────
 
-    # Prefer "應執行" (merged concurrent sentence)
-    merged_m = MERGED_SENTENCE_RE.search(main_text)
-    if merged_m:
-        result["prison_months"] = _to_months(merged_m.group(1), merged_m.group(2))
-    else:
-        # Collect all individual prison terms, take max
-        terms = []
-        for m in PRISON_YEAR_MONTH_RE.finditer(main_text):
-            months = _to_months(m.group(1), m.group(2))
-            if months:
-                terms.append(months)
-        for m in PRISON_MONTHS_ALT_RE.finditer(main_text):
-            terms.append(int(m.group(1)))
-        if terms:
-            result["prison_months"] = max(terms)
+    def _extract_prison(search_text: str) -> int | None:
+        # MERGED_SENTENCE_RE: g1=year g2=month OR g3=month-only
+        merged_m = MERGED_SENTENCE_RE.search(search_text)
+        if merged_m:
+            if merged_m.group(1):
+                return _to_months(merged_m.group(1), merged_m.group(2))
+            return _parse_num(merged_m.group(3))
 
-    # Fix: when appeal is upheld, original sentence is in the reasoning section
+        terms = []
+        # PRISON_YEAR_MONTH_RE: g1=year g2=opt-month OR g3=month-only
+        for m in PRISON_YEAR_MONTH_RE.finditer(search_text):
+            if m.group(1):
+                v = _to_months(m.group(1), m.group(2))
+            else:
+                v = _parse_num(m.group(3))
+            if v:
+                terms.append(v)
+        # PRISON_MONTHS_ALT_RE: g1=months
+        for m in PRISON_MONTHS_ALT_RE.finditer(search_text):
+            v = _parse_num(m.group(1))
+            if v:
+                terms.append(v)
+        return max(terms) if terms else None
+
+    result["prison_months"] = _extract_prison(main_text)
+
+    # For upheld appeals, the sentence is in the reasoning section
     if result["prison_months"] is None and result["appeal_outcome"] == "上訴駁回":
         search_text = reason_text if reason_text else text
         for m in REASONING_SENTENCE_RE.finditer(search_text):
-            months = _to_months(m.group(1), m.group(2))
-            if months and months > 0:
-                result["prison_months"] = months
+            if m.group(1):
+                v = _to_months(m.group(1), m.group(2))
+            else:
+                v = _parse_num(m.group(3))
+            if v:
+                result["prison_months"] = v
                 break
 
     # Detention (拘役) — mutually exclusive with prison
     det_m = DETENTION_RE.search(main_text)
     if det_m and result["prison_months"] is None:
-        result["detention_days"] = int(det_m.group(1))
+        result["detention_days"] = _parse_num(det_m.group(1))
 
     # ── Suspended sentence ────────────────────────────────────────────────────
 
     susp_m = SUSPENDED_RE.search(text)
     if susp_m:
         result["sentence_suspended"] = True
-        dur = int(susp_m.group(1))
+        dur = _parse_num(susp_m.group(1)) or 0
         unit = susp_m.group(2)
         result["suspended_duration_months"] = dur * 12 if unit == "年" else dur
 
@@ -317,20 +375,20 @@ def parse_judgment(raw: dict) -> dict:
         if fine_m.group(1):
             result["fine_ntd"] = int(fine_m.group(1).replace(",", ""))
         else:
-            wan = int(fine_m.group(2)) * 10000
-            qian = int(fine_m.group(3)) * 1000 if fine_m.group(3) else 0
+            wan = (_parse_num(fine_m.group(2)) or 0) * 10000
+            qian = (_parse_num(fine_m.group(3)) or 0) * 1000
             result["fine_ntd"] = wan + qian
 
     conv_m = CONVERTIBLE_RE.search(main_text)
     if conv_m:
-        result["convertible_per_day"] = int(conv_m.group(1))
+        result["convertible_per_day"] = _parse_num(conv_m.group(1))
 
     # ── License ───────────────────────────────────────────────────────────────
 
     lic_m = LICENSE_SUSPEND_RE.search(text)
     if lic_m:
         result["license_action"] = "吊扣"
-        dur = int(lic_m.group(1))
+        dur = _parse_num(lic_m.group(1)) or 0
         unit = lic_m.group(2)
         result["license_months"] = dur * 12 if unit == "年" else dur
     elif LICENSE_REVOKE_RE.search(text):
