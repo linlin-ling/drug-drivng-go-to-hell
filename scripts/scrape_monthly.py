@@ -101,12 +101,19 @@ def download_month(session, meta_list: list[dict], year_ce: int, month: int) -> 
 
 def parse_docs(docs: list[dict]) -> list[dict]:
     parsed = []
+    excluded = 0
     for doc in docs:
         try:
-            parsed.append(parse_judgment(doc))
+            r = parse_judgment(doc)
+            if not r.get("is_drug_driving_case", True):
+                excluded += 1
+                continue
+            parsed.append(r)
         except Exception as e:
             print(f"  [WARN] parse error {doc.get('jid','?')}: {e}", file=sys.stderr)
     warn_count = sum(1 for r in parsed if r.get("parse_warnings"))
+    if excluded:
+        print(f"  [filter] 排除 {excluded} 筆非毒駕案件")
     print(f"  解析完成：{len(parsed)} 筆（含警告 {warn_count} 筆）")
     return parsed
 

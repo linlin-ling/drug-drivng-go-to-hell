@@ -1,5 +1,6 @@
 """Load, clean, and normalize parsed judgment data into a pandas DataFrame."""
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -101,6 +102,13 @@ def load_and_clean(json_path: str | Path = PROCESSED_JSON) -> pd.DataFrame:
                 "appeal_outcome", "appealed_by"]:
         if col not in df.columns:
             df[col] = None
+
+    # ── Drug-driving filter: use is_drug_driving_case flag if available ────────
+    if "is_drug_driving_case" in df.columns:
+        n_excl = (~df["is_drug_driving_case"].fillna(True)).sum()
+        if n_excl > 0:
+            print(f"  [filter] 排除 {n_excl} 筆非毒駕案件", file=sys.stderr)
+        df = df[df["is_drug_driving_case"].fillna(True)].copy()
 
     # ── Filter: keep only cases with valid sentencing info ────────────────────
     valid_mask = (

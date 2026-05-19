@@ -58,6 +58,20 @@ CASE_NO_RE = re.compile(r"(?:民國\s*)?(\d{2,3})\s*年度\s*([^\s第號]{1,8})\
 DATE_ROC_RE = re.compile(r"中\s*華\s*民\s*國\s*(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日")
 JUDGE_RE = re.compile(r"(?:審判長\s*)?法\s*官\s*([一-鿿]{2,4})")
 
+# ── Drug-driving case filter ──────────────────────────────────────────────────
+
+# True when 刑法185條之3 is an actual charged statute in this judgment (not
+# just a mention in the defendant's prior criminal history)
+DD_CHARGE_RE = re.compile(
+    r"(?:係犯|犯|核係|論以|應論以|核被告所為[，,\s]*係犯)"
+    r"[^。\n]{0,50}?185條之3"
+    r"|185條之3[^。\n]{0,30}?(?:之罪|罪名|罪章|公共危險罪)"
+    r"|185條之3第[一二三四]款"
+    r"|公共危險罪[^。\n]{0,20}?185條之3",
+    re.DOTALL,
+)
+
+
 # ── Appeal / cross-instance patterns ──────────────────────────────────────────
 
 # Extract original case reference in appeal judgments: "不服XX法院 YYY年度ZZZ字第NNN號"
@@ -223,6 +237,7 @@ def parse_judgment(raw: dict) -> dict:
         "appeal_outcome": None,
         "appealed_by": None,
         # Quality
+        "is_drug_driving_case": False,
         "parse_warnings": [],
     }
 
@@ -420,6 +435,18 @@ def parse_judgment(raw: dict) -> dict:
     result["caused_injury"] = bool(INJURY_RE.search(text))
     result["caused_serious_injury"] = bool(SERIOUS_INJURY_RE.search(text))
     result["guilty_plea"] = bool(GUILTY_PLEA_RE.search(text))
+
+    # ── Drug-driving case flag ────────────────────────────────────────────────
+
+    case_tw = result.get("case_type_word") or ""
+    # Traffic-type cases (交*) are drug/alcohol driving cases
+    is_traffic = "交" in case_tw
+    # 毒聲/毒抗 are drug-rehab procedural rulings, never drug driving
+    is_tox_procedural = case_tw.startswith("毒")
+    # For non-traffic types, require 185條之3 to appear as a direct charge
+    result["is_drug_driving_case"] = (
+        is_traffic or (not is_tox_procedural and bool(DD_CHARGE_RE.search(text)))
+    )
 
     # ── Quality check ─────────────────────────────────────────────────────────
 
