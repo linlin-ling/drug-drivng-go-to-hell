@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """
 Monthly batch scraper: scrape → parse → append to judgments.json
+
+Searches each keyword × each month independently; deduplicates by JID.
+
 Usage:
-  python scripts/scrape_monthly.py 2026-03 2026-04
-  python scripts/scrape_monthly.py 2026-01 2026-02
+  # All keywords, specific months
+  python scripts/scrape_monthly.py 2026-01 2026-02 2026-03 2026-04
+
+  # Single keyword override (for testing or resuming one keyword)
+  python scripts/scrape_monthly.py --keyword "海洛因 不能安全駕駛" 2026-01 2026-02
 """
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -18,7 +25,15 @@ from scraper.judicial_scraper import search_year, fetch_judgment_text
 from scraper.parser import parse_judgment
 
 ROC_OFFSET = 1911
-KEYWORD = "甲基安非他命 不能安全駕駛"
+
+# All drug-driving keywords to search.  Each is run independently per month.
+# Order matters: more common drugs first so progress is visible early.
+ALL_KEYWORDS = [
+    "甲基安非他命 不能安全駕駛",   # meth (class 2) — already run
+    "海洛因 不能安全駕駛",          # heroin (class 1)
+    "愷他命 不能安全駕駛",          # ketamine (class 3)
+    "施用毒品 不能安全駕駛",        # generic catch-all (covers MDMA, cannabis, etc.)
+]
 
 RAW_DIR = Path("data/raw")
 PROCESSED_DIR = Path("data/processed")
@@ -45,18 +60,18 @@ def save_progress(p: dict) -> None:
     PROGRESS_FILE.write_text(json.dumps(p, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def scrape_month(session, year_ce: int, month: int) -> list[dict]:
+def scrape_month(session, keyword: str, year_ce: int, month: int) -> list[dict]:
     roc = year_ce - ROC_OFFSET
     last = last_day_of(year_ce, month)
     roc_start = f"{roc:03d}{month:02d}01"
     roc_end = f"{roc:03d}{month:02d}{last:02d}"
 
-    print(f"\n{'='*55}")
+    print(f"\n{'='*60}")
     print(f"  搜尋 {year_ce}-{month:02d}  ROC {roc_start}~{roc_end}")
-    print(f"  關鍵字: {KEYWORD!r}")
-    print(f"{'='*55}")
+    print(f"  關鍵字: {keyword!r}")
+    print(f"{'='*60}")
 
-    meta_list = search_year(session, KEYWORD, year_ce, roc_start, roc_end)
+    meta_list = search_year(session, keyword, year_ce, roc_start, roc_end)
 
     cap_warn = "⚠️  已達 500 筆上限，可能有遺漏" if len(meta_list) >= 500 else "✅ 未達上限"
     print(f"  搜尋結果: {len(meta_list)} 筆  {cap_warn}")
@@ -137,38 +152,80 @@ def append_to_processed(new_records: list[dict]) -> int:
     return len(to_add)
 
 
-def run(months: list[tuple[int, int]]) -> None:
+def run(keywords: list[str], months: list[tuple[int, int]]) -> None:
     session = make_session()
     grand_total = 0
 
-    for year_ce, month in months:
-        meta = scrape_month(session, year_ce, month)
-        if not meta:
-            print("  無結果，跳過")
-            continue
+    for keyword in keywords:
+        print(f"\n{'#'*60}")
+        print(f"  關鍵字批次: {keyword!r}")
+        print(f"{'#'*60}")
+        kw_total = 0
 
-        polite_sleep(2.0, 3.0)
-        docs = download_month(session, meta, year_ce, month)
+        for year_ce, month in months:
+            meta = scrape_month(session, keyword, year_ce, month)
+            if not meta:
+                print("  無結果，跳過")
+                continue
 
-        if docs:
-            parsed = parse_docs(docs)
-            added = append_to_processed(parsed)
-            grand_total += added
+            polite_sleep(2.0, 3.0)
+            docs = download_month(session, meta, year_ce, month)
 
-        polite_sleep(3.0, 5.0)
+            if docs:
+                parsed = parse_docs(docs)
+                added = append_to_processed(parsed)
+                kw_total += added
 
-    print(f"\n{'='*55}")
-    print(f"  批次完成，共新增 {grand_total} 筆解析資料")
-    print(f"{'='*55}\n")
+            polite_sleep(3.0, 5.0)
+
+        print(f"\n  關鍵字 {keyword!r} 完成，新增 {kw_total} 筆")
+        grand_total += kw_total
+        polite_sleep(5.0, 8.0)
+
+    print(f"\n{'='*60}")
+    print(f"  全部批次完成，共新增 {grand_total} 筆解析資料")
+    print(f"{'='*60}\n")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python scripts/scrape_monthly.py 2026-03 2026-04")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description="Monthly drug-driving judgment scraper",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # All keywords, four months
+  python scripts/scrape_monthly.py 2026-01 2026-02 2026-03 2026-04
+
+  # Single keyword override
+  python scripts/scrape_monthly.py --keyword "海洛因 不能安全駕駛" 2026-01 2026-02
+
+  # Skip already-completed first keyword, run only remaining
+  python scripts/scrape_monthly.py --skip-first 1 2026-01 2026-02
+        """,
+    )
+    parser.add_argument(
+        "months",
+        nargs="+",
+        metavar="YYYY-MM",
+        help="Months to scrape, e.g. 2026-01 2026-02",
+    )
+    parser.add_argument(
+        "--keyword",
+        metavar="KW",
+        help="Override: scrape only this keyword (instead of all ALL_KEYWORDS)",
+    )
+    parser.add_argument(
+        "--skip-first",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Skip the first N keywords in ALL_KEYWORDS (useful for resuming)",
+    )
+
+    args = parser.parse_args()
 
     month_list = []
-    for ym in sys.argv[1:]:
+    for ym in args.months:
         try:
             y, m = ym.split("-")
             month_list.append((int(y), int(m)))
@@ -176,5 +233,11 @@ if __name__ == "__main__":
             print(f"Bad format: {ym!r}，請使用 YYYY-MM")
             sys.exit(1)
 
+    if args.keyword:
+        keywords = [args.keyword]
+    else:
+        keywords = ALL_KEYWORDS[args.skip_first:]
+
     print(f"執行月份：{month_list}")
-    run(month_list)
+    print(f"執行關鍵字：{keywords}")
+    run(keywords, month_list)
