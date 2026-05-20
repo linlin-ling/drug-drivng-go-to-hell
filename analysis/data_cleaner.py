@@ -1,4 +1,5 @@
 """Load, clean, and normalize parsed judgment data into a pandas DataFrame."""
+from __future__ import annotations
 import json
 import sys
 from pathlib import Path

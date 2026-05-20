@@ -1,4 +1,5 @@
 """法官分析頁：法官量刑 violin plot + 異常法官排行。"""
+from __future__ import annotations
 import plotly.express as px
 import plotly.graph_objects as go
 from dash import dcc, html, dash_table

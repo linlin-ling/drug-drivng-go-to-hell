@@ -6,6 +6,7 @@ Searches for drug-driving (毒駕) criminal cases (刑法185-3) over the past 10
 Results are stored as JSON files under data/raw/<year>/<case_id>.json.
 Supports resumable scraping via data/raw/progress.json.
 """
+from __future__ import annotations
 import json
 import re
 import sys

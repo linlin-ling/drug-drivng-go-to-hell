@@ -2,6 +2,7 @@
 Extract structured data from Taiwan criminal judgment full text (JFULL).
 All text is Traditional Chinese. Sentences are in the 主文 section.
 """
+from __future__ import annotations
 import re
 from pathlib import Path
 import json
